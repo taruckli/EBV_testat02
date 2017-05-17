@@ -13,6 +13,7 @@
 #include <stdlib.h>
 
 #define IMG_SIZE NUM_COLORS*OSC_CAM_MAX_IMAGE_WIDTH*OSC_CAM_MAX_IMAGE_HEIGHT
+#define RGB_COLORS 1
 
 const int nc = OSC_CAM_MAX_IMAGE_WIDTH;
 const int nr = OSC_CAM_MAX_IMAGE_HEIGHT;
@@ -53,6 +54,8 @@ void ProcessFrame() {
 	if(data.ipc.state.nStepCounter == 1) {
 		ManualThreshold = false;
 	} else {
+
+
 		unsigned char Threshold = OtsuThreshold(SENSORIMG);
 
 		Binarize(Threshold);
@@ -63,6 +66,7 @@ void ProcessFrame() {
 		DetectRegions();
 
 		DrawBoundingBoxes();
+		ChangeDetection();
 
 		if(ManualThreshold) {
 			char Text[] = "manual threshold";
@@ -74,6 +78,83 @@ void ProcessFrame() {
 	}
 }
 
+
+void ChangeDetection() {
+	const int NumFgrCol = 2;
+	uint8 FrgCol[2][3];
+	if(RGB_COLORS){
+		//uint8 FrgCol[0][0] = {{150, 145, 100}, {50, 30, 240}}; //Blau, Rot im BGR-Format
+		FrgCol[0][0] = 150;
+		FrgCol[0][1] = 145;
+		FrgCol[0][2] = 100;
+		FrgCol[1][0] = 50;
+		FrgCol[1][1] = 30;
+		FrgCol[1][2] = 240;
+	} else {
+		ycbcr();
+		//uint8 FrgCol[2][3] = {{60, 90, 224}, {60, 150, 115}}; //Cb, Cr im CrCbY-Format
+		FrgCol[0][0] = 60;
+		FrgCol[0][1] = 90;
+		FrgCol[0][2] = 224;
+		FrgCol[1][0] = 60;
+		FrgCol[1][1] = 150;
+		FrgCol[1][2] = 115;
+	}
+
+	int r, c, frg, p;
+	memset(data.u8TempImage[INDEX0], 0, IMG_SIZE);
+	memset(data.u8TempImage[BACKGROUND], 0, IMG_SIZE);
+	//loop over the rows
+	for(r = 0; r < nr*nc; r += nc) {
+		//loop over the columns
+		for(c = 0; c < nc; c++) {
+			//loop over the different Frg colors and find smallest difference
+			int MinDif = 1 << 30;
+			int MinInd = 0;
+			for(frg = 0; frg < NumFgrCol; frg++) {
+				int Dif = 0;
+				//loop over the color planes (r, g, b) and sum up the difference
+				for(p = 1; p < NUM_COLORS; p++) {
+					Dif += abs((int) data.u8TempImage[SENSORIMG][(r+c)*NUM_COLORS+p]-
+							(int) FrgCol[frg][p]);
+				}
+				if(Dif < MinDif) {
+					MinDif = Dif;
+					MinInd = frg;
+				}
+			}
+			//if the difference is smaller than threshold value
+			if(MinDif < data.ipc.state.nThreshold) {
+				//set pixel value to 255 in THRESHOLD image for further processing
+				//(we use only the first third of the image buffer)
+				data.u8TempImage[INDEX1][(r+c)] = 255;
+				//set pixel value to Frg color in BACKGROUND image for visualization
+				for(p = 0; p < NUM_COLORS; p++) {
+					data.u8TempImage[BACKGROUND][(r+c)*NUM_COLORS+p] = FrgCol[MinInd][p];
+				}
+			}
+		}
+	}
+}
+
+void ycbcr(){
+	for(int r = 0; r < nr*nc; r += nc) {
+		//loop over the columns
+		for(int c = 0; c < nc; c++) {
+			//get rgb values (order is actually bgr!)
+			float B_ = data.u8TempImage[SENSORIMG][(r+c)*NUM_COLORS+0];
+			float G_ = data.u8TempImage[SENSORIMG][(r+c)*NUM_COLORS+1];
+			float R_ = data.u8TempImage[SENSORIMG][(r+c)*NUM_COLORS+2];
+			uint8 Y_ = (uint8) ( 0 + 0.299*R_ + 0.587*G_ + 0.114*B_);
+			uint8 Cb_ = (uint8) (128 - 0.169*R_ - 0.331*G_ + 0.500*B_);
+			uint8 Cr_ = (uint8) (128 + 0.500*R_ - 0.419*G_ - 0.081*B_);
+			//we write result to THRESHOLD
+			data.u8TempImage[THRESHOLD][(r+c)*NUM_COLORS+0] = Y_;
+			data.u8TempImage[THRESHOLD][(r+c)*NUM_COLORS+1] = Cb_;
+			data.u8TempImage[THRESHOLD][(r+c)*NUM_COLORS+2] = Cr_;
+		}
+	}
+}
 
 
 void Binarize(unsigned char threshold) {
